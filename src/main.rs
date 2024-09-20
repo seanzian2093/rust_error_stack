@@ -1,14 +1,18 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, io, fmt, error::Error};
-use error_stack::{IntoReport, Report, Result, ResultExt};
+use std::{collections::HashMap, error::Error, fmt, io};
 
 #[derive(Debug)]
-struct ParsePaymentInfoError;
+enum ParsePaymentInfoError {
+    ParseError(String),
+    Other(String),
+}
 
 impl fmt::Display for ParsePaymentInfoError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.write_str("Parsing payment error: invalid payment info")
+        fmt.write_str(&format!(
+            "Parsing payment error: invalid payment info:\n{self:?}"
+        ))
     }
 }
 
@@ -19,17 +23,14 @@ fn parse_card_numbers(card: &str) -> Result<Vec<u32>, ParsePaymentInfoError> {
         .split(" ")
         .into_iter()
         .map(|s| {
-            s.parse()
-            .report()
-            .attach_printable_lazy(|| {
-                format!("{s:?} could not be parsed as u32")
+            s.parse().map_err(|err| {
+                // \n does not work
+                ParsePaymentInfoError::ParseError(format!(
+                    "Failed to parse input `{card}` as numbers <- `{s}` could not be parsed as u32 <- {err}"
+                ))
             })
         })
-        .collect::<Result<Vec<u32>, _>>()
-        .change_context(ParsePaymentInfoError)
-        .attach_printable(format!(
-            "Failed to parse input as numbers. Input: {card}"
-        ))?;
+        .collect::<Result<Vec<u32>, _>>()?;
 
     Ok(numbers)
 }
@@ -37,7 +38,7 @@ fn parse_card_numbers(card: &str) -> Result<Vec<u32>, ParsePaymentInfoError> {
 #[derive(Debug)]
 struct Expiration {
     year: u32,
-    month: u32
+    month: u32,
 }
 
 #[derive(Debug)]
@@ -54,33 +55,35 @@ fn parse_card(card: &str) -> Result<Card, ParsePaymentInfoError> {
     let expected_len = 4;
 
     if len != expected_len {
-        return Err(Report::new(ParsePaymentInfoError)
-            .attach_printable(format!(
-                "Incorrect number of elements parsed. Expected {expected_len} but got {len}. Elements: {numbers:?}"
-            )));
+        return Err(ParsePaymentInfoError::Other(
+            format!("Incorrect number of elements parsed <- expected `{expected_len}` but got `{len}` <- elements: `{numbers:?}`")
+        ));
     }
 
     let cvv = numbers.pop().unwrap();
     let year = numbers.pop().unwrap();
     let month = numbers.pop().unwrap();
-    let number = numbers.pop().unwrap(); 
+    let number = numbers.pop().unwrap();
 
     Ok(Card {
         number,
         exp: Expiration { year, month },
-        cvv
+        cvv,
     })
 }
 
 #[derive(Debug)]
 enum CreditCardError {
     InvalidInput(String),
-    Other
+    Other(String),
 }
 
 impl fmt::Display for CreditCardError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.write_str("Credit card error: Could not retrieve credit card.")
+        // fmt.write_str("Credit card error: Could not retrieve credit card.")
+        fmt.write_str(&format!(
+            "Credit card error: Could not retrieve credit card:\n{self:?}"
+        ))
     }
 }
 
@@ -92,13 +95,20 @@ fn get_credit_card_info(
 ) -> Result<Card, CreditCardError> {
     let card_string = credit_cards.get(name).ok_or_else(|| {
         let msg = format!("No credit card was found for {name}.");
-        Report::new(CreditCardError::InvalidInput(msg.clone()))
-            .attach_printable(msg.clone())
+        CreditCardError::InvalidInput(msg.clone())
     })?;
 
-    let card = parse_card(card_string)
-        .change_context(CreditCardError::Other)
-        .attach_printable(format!("{name}'s card could not be parsed."))?;
+    // parse_card could pop 2 variants of ParsePaymentInfoError
+    // - ParseError
+    // - Other
+    let card = parse_card(card_string).map_err(|err| match &err {
+        ParsePaymentInfoError::ParseError(s) => {
+            CreditCardError::Other(format!("{name}'s card could not be parsed <- {s}"))
+        }
+        ParsePaymentInfoError::Other(s) => {
+            CreditCardError::Other(format!("{name}'s card could not be parsed <- {s}"))
+        }
+    })?;
 
     Ok(card)
 }
@@ -119,22 +129,25 @@ fn main() {
     io::stdin()
         .read_line(&mut name)
         .expect("Failed to read line");
-    
+
     let result = get_credit_card_info(&credit_cards, name.trim());
 
     match result {
         Ok(card) => {
             println!("\nCredit Card Info: {card:?}");
-        },
+        }
         Err(err) => {
-            match err.current_context() {
+            match &err {
                 CreditCardError::InvalidInput(msg) => println!("\n{msg}"),
-                CreditCardError::Other => println!("\nSomething went wrong! Try again!")
+                CreditCardError::Other(_) => println!("\nSomething went wrong! Try again!"),
             }
 
-            log::error!("\n{err:?}");
+            // debug - not our target
+            // log::error!("\n{err:?}");
+            // debug but pretty print- not our target
+            // log::error!("\n{err:#?}");
+            // dispay
+            log::error!("\n{err}");
         }
     }
-
-    
 }
